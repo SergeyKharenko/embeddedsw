@@ -759,13 +759,36 @@ static u32_t get_Marvell_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
 	return XST_SUCCESS;
 }
 
+#define PHY_REALTEK_REV_MASK   0x000F
+#define PHY_REALTEK_REV_8211E  0x0005
+#define PHY_REALTEK_REV_8211F  0x0006
+
+#define RTL8211F_PHY_PHYSR		26
+#define RTL8211F_PHY_PAGSR		31
+
+#define RTL8211F_SPEED_MASK		0x0030
+#define RTL8211F_SPEED_1G		0x0020
+#define RTL8211F_SPEED_100M		0x0010
+#define RTL8211F_SPEED_10M		0x0000
+
 static u32_t get_Realtek_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
 {
+	u16_t phy_reversion;
 	u16_t control;
 	u16_t status;
 	u16_t status_speed;
 	u32_t timeout_counter = 0;
 	u32_t temp_speed;
+
+	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_2_REG,
+			&phy_reversion);
+	phy_reversion &= PHY_REALTEK_REV_MASK;
+
+	if((phy_reversion != PHY_REALTEK_REV_8211E) &&
+		(phy_reversion != PHY_REALTEK_REV_8211F)) {
+		xil_printf("Unknow Realtek PHY \r\n");
+		return XST_FAILURE;
+	}
 
 	xil_printf("Start PHY autonegotiation \r\n");
 
@@ -815,17 +838,36 @@ static u32_t get_Realtek_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
 	}
 	xil_printf("autonegotiation complete \r\n");
 
-	XEmacPs_PhyRead(xemacpsp, phy_addr,IEEE_SPECIFIC_STATUS_REG,
-					&status_speed);
-	if (status_speed & 0x400) {
-		temp_speed = status_speed & IEEE_SPEED_MASK;
+	if(phy_reversion == PHY_REALTEK_REV_8211E){
+		XEmacPs_PhyRead(xemacpsp, phy_addr,IEEE_SPECIFIC_STATUS_REG,
+						&status_speed);
+		if (status_speed & 0x400) {
+			temp_speed = status_speed & IEEE_SPEED_MASK;
 
-		if (temp_speed == IEEE_SPEED_1000)
-			return 1000;
-		else if(temp_speed == IEEE_SPEED_100)
-			return 100;
-		else
-			return 10;
+			if (temp_speed == IEEE_SPEED_1000)
+				return 1000;
+			else if(temp_speed == IEEE_SPEED_100)
+				return 100;
+			else
+				return 10;
+		}
+	}
+	else if(phy_reversion == PHY_REALTEK_REV_8211F) {
+		XEmacPs_PhyWrite(xemacpsp, phy_addr, RTL8211F_PHY_PAGSR, 0x0A43);
+		XEmacPs_PhyRead(xemacpsp, phy_addr,RTL8211F_PHY_PHYSR,
+						&status_speed);
+		XEmacPs_PhyWrite(xemacpsp, phy_addr, RTL8211F_PHY_PAGSR, 0);
+		if(status_speed & 0x0004){
+			temp_speed = status_speed & RTL8211F_SPEED_MASK;
+			if(temp_speed == RTL8211F_SPEED_1G)
+				return 1000;
+			else if(temp_speed == RTL8211F_SPEED_100M)
+				return 100;
+			else if(temp_speed == RTL8211F_SPEED_10M)
+				return 10;
+			else
+				return XST_FAILURE;
+		}
 	}
 
 	return XST_FAILURE;
@@ -1014,13 +1056,21 @@ static u32_t configure_IEEE_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr, u32_t s
 {
 	u16_t control;
 	u16_t autonereg;
+	u16_t phy_identity;
 
-	XEmacPs_PhyWrite(xemacpsp,phy_addr, IEEE_PAGE_ADDRESS_REGISTER, 2);
-	XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_CONTROL_REG_MAC, &control);
-	control |= IEEE_RGMII_TXRX_CLOCK_DELAYED_MASK;
-	XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_CONTROL_REG_MAC, control);
+	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_1_REG,
+					&phy_identity);
+	if(phy_identity == PHY_REALTEK_IDENTIFIER) {
+		xil_printf("WARNING: RTL8211F TX/RX delay is configured by hardware \r\n");
+	}
+	else {
+		XEmacPs_PhyWrite(xemacpsp,phy_addr, IEEE_PAGE_ADDRESS_REGISTER, 2);
+		XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_CONTROL_REG_MAC, &control);
+		control |= IEEE_RGMII_TXRX_CLOCK_DELAYED_MASK;
+		XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_CONTROL_REG_MAC, control);
 
-	XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_PAGE_ADDRESS_REGISTER, 0);
+		XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_PAGE_ADDRESS_REGISTER, 0);
+	}
 
 	XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_AUTONEGO_ADVERTISE_REG, &autonereg);
 	autonereg |= IEEE_ASYMMETRIC_PAUSE_MASK;
